@@ -187,7 +187,7 @@ describe("zeta-otc", () => {
         [optionMint.toBuffer(), provider.wallet.publicKey.toBuffer()],
         program.programId
       );
-    let userOptionTokenAccount = _userOptionTokenAccount;
+    userOptionTokenAccount = _userOptionTokenAccount;
 
     let expiry = new anchor.BN(123);
     let strike = new anchor.BN(420);
@@ -237,5 +237,39 @@ describe("zeta-otc", () => {
       userOptionTokenAccount
     );
     assert.ok(userOptionTokenAccountInfo.amount.toNumber() == collateralAmount);
+  });
+
+  it("Burn options", async () => {
+    let burnAmount = new anchor.BN(collateralAmount / 2);
+    await program.rpc.burnOption(burnAmount, {
+      accounts: {
+        state,
+        underlying,
+        vault,
+        underlyingMint: token.publicKey,
+        underlyingTokenAccount: userTokenAddress,
+        authority: provider.wallet.publicKey,
+        optionAccount,
+        mintAuthority,
+        optionMint,
+        userOptionTokenAccount,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        vaultAuthority,
+      },
+    });
+
+    let userOptionTokenAccountInfo = await utils.getTokenAccountInfo(
+      provider.connection,
+      userOptionTokenAccount
+    );
+    assert.ok(
+      userOptionTokenAccountInfo.amount.toNumber() == collateralAmount / 2
+    );
+
+    let userTokenAccount = await utils.getTokenAccountInfo(
+      provider.connection,
+      userTokenAddress
+    );
+    assert.ok(userTokenAccount.amount.toNumber() == collateralAmount / 2);
   });
 });

@@ -1,5 +1,5 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{self, Mint, MintTo, Token, TokenAccount, Transfer};
+use anchor_spl::token::{self, Burn, Mint, MintTo, Token, TokenAccount, Transfer};
 
 declare_id!("Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS");
 
@@ -44,6 +44,9 @@ pub mod zeta_otc {
         args: InitializeOptionArgs,
     ) -> ProgramResult {
         let option_account = &mut ctx.accounts.option_account;
+        option_account.option_account_nonce = args.option_account_nonce;
+        option_account.option_mint_nonce = args.option_mint_nonce;
+        option_account.creator_option_token_account_nonce = args.token_account_nonce;
         option_account.option_mint = ctx.accounts.option_mint.key();
         option_account.underlying_mint = ctx.accounts.underlying_mint.key();
         option_account.creator = ctx.accounts.authority.key();
@@ -58,10 +61,37 @@ pub mod zeta_otc {
             ctx.accounts
                 .into_mint_to_context()
                 .with_signer(&[&mint_seeds[..]]),
+            // TODO this should be divided by mint.decimals
             args.collateral_amount,
         )?;
 
         token::transfer(ctx.accounts.into_transfer_context(), args.collateral_amount)?;
+
+        Ok(())
+    }
+
+    pub fn burn_option(ctx: Context<BurnOption>, amount: u64) -> ProgramResult {
+        let mint_seeds = mint_authority! {
+            bump = ctx.accounts.state.mint_auth_nonce
+        };
+
+        let vault_seeds = vault_authority! {
+            bump = ctx.accounts.state.vault_auth_nonce
+        };
+
+        token::burn(
+            ctx.accounts
+                .into_burn_context()
+                .with_signer(&[&mint_seeds[..]]),
+            amount,
+        )?;
+
+        token::transfer(
+            ctx.accounts
+                .into_transfer_context()
+                .with_signer(&[&vault_seeds[..]]),
+            amount,
+        )?;
 
         Ok(())
     }
@@ -187,6 +217,64 @@ pub struct InitializeOption<'info> {
     pub rent: Sysvar<'info, Rent>,
 }
 
+#[derive(Accounts)]
+#[instruction(amount: u64)]
+pub struct BurnOption<'info> {
+    pub state: Box<Account<'info, State>>,
+    #[account(
+        seeds = [UNDERLYING_SEED.as_bytes().as_ref(), underlying_mint.key().as_ref()],
+        bump = underlying.underlying_nonce,
+    )]
+    pub underlying: Box<Account<'info, Underlying>>,
+    #[account(
+        mut,
+        seeds = [VAULT_SEED.as_bytes().as_ref(), underlying_mint.key().as_ref()],
+        bump = underlying.vault_nonce,
+    )]
+    pub vault: Box<Account<'info, TokenAccount>>,
+    pub underlying_mint: Box<Account<'info, Mint>>,
+    #[account(
+        mut,
+        constraint = underlying_token_account.mint == underlying_mint.key() @ ErrorCode::TokenAccountMintMismatch,
+        constraint = underlying_token_account.owner == authority.key() @ ErrorCode::InvalidTokenAccountOwner,
+    )]
+    pub underlying_token_account: Box<Account<'info, TokenAccount>>,
+    #[account(
+        mut,
+        constraint = authority.key() == option_account.creator @ ErrorCode::OnlyCreatorCanBurnOptions
+    )]
+    pub authority: Signer<'info>,
+    #[account(
+        seeds = [OPTION_ACCOUNT_SEED.as_bytes().as_ref(), underlying.key().as_ref(), &underlying.count.to_le_bytes()],
+        bump = option_account.option_account_nonce,
+    )]
+    pub option_account: Box<Account<'info, OptionAccount>>,
+    #[account(
+        seeds = [MINT_AUTH_SEED.as_bytes().as_ref()],
+        bump = state.mint_auth_nonce,
+    )]
+    pub mint_authority: AccountInfo<'info>,
+    #[account(
+        mut,
+        seeds = [underlying.key().as_ref(), &underlying.count.to_le_bytes()],
+        bump = option_account.option_mint_nonce,
+    )]
+    pub option_mint: Box<Account<'info, Mint>>,
+    #[account(
+        mut,
+        seeds = [option_mint.key().as_ref(), authority.key().as_ref()],
+        bump = option_account.creator_option_token_account_nonce,
+        constraint = user_option_token_account.amount >= amount @ ErrorCode::InsufficientOptionsToBurn,
+    )]
+    pub user_option_token_account: Box<Account<'info, TokenAccount>>,
+    pub token_program: Program<'info, Token>,
+    #[account(
+        seeds = [VAULT_AUTH_SEED.as_bytes().as_ref()],
+        bump = state.vault_auth_nonce,
+    )]
+    pub vault_authority: AccountInfo<'info>,
+}
+
 #[derive(AnchorSerialize, AnchorDeserialize)]
 pub struct InitializeOptionArgs {
     pub collateral_amount: u64,
@@ -213,6 +301,9 @@ pub struct InitializeUnderlyingArgs {
 #[account]
 #[derive(Default)]
 pub struct OptionAccount {
+    pub option_account_nonce: u8,
+    pub option_mint_nonce: u8,
+    pub creator_option_token_account_nonce: u8,
     pub option_mint: Pubkey,
     pub underlying_mint: Pubkey,
     pub creator: Pubkey,
@@ -260,10 +351,37 @@ impl<'info> InitializeOption<'info> {
     }
 }
 
+impl<'info> BurnOption<'info> {
+    pub fn into_burn_context(&self) -> CpiContext<'_, '_, '_, 'info, Burn<'info>> {
+        let cpi_accounts = Burn {
+            mint: self.option_mint.to_account_info().clone(),
+            to: self.user_option_token_account.to_account_info().clone(),
+            authority: self.authority.to_account_info().clone(),
+        };
+        CpiContext::new(self.token_program.to_account_info().clone(), cpi_accounts)
+    }
+
+    pub fn into_transfer_context(&self) -> CpiContext<'_, '_, '_, 'info, Transfer<'info>> {
+        let cpi_accounts = Transfer {
+            from: self.vault.to_account_info().clone(),
+            to: self.underlying_token_account.to_account_info().clone(),
+            authority: self.vault_authority.to_account_info().clone(),
+        };
+        CpiContext::new(self.token_program.to_account_info().clone(), cpi_accounts)
+    }
+}
+
 #[macro_export]
 macro_rules! mint_authority {
     (bump = $bump:expr) => {
         &[MINT_AUTH_SEED.as_bytes().as_ref(), &[$bump]]
+    };
+}
+
+#[macro_export]
+macro_rules! vault_authority {
+    (bump = $bump:expr) => {
+        &[VAULT_AUTH_SEED.as_bytes().as_ref(), &[$bump]]
     };
 }
 
@@ -277,4 +395,8 @@ pub enum ErrorCode {
     InvalidTokenAccountOwner,
     #[msg("Insufficient funds")]
     InsufficientFunds,
+    #[msg("Insufficient options to burn")]
+    InsufficientOptionsToBurn,
+    #[msg("Only creator can burn options")]
+    OnlyCreatorCanBurnOptions,
 }
