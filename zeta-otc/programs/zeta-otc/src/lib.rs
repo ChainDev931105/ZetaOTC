@@ -182,6 +182,8 @@ pub mod zeta_otc {
 
         // If the option has expired worthless
         if oracle_price <= ctx.accounts.option_account.strike {
+            ctx.accounts.option_account.profit_per_option = 0;
+            ctx.accounts.option_account.remaining_collateral = ctx.accounts.vault.amount;
         } else {
             let itm_amount = oracle_price
                 .checked_sub(ctx.accounts.option_account.strike)
@@ -202,6 +204,7 @@ pub mod zeta_otc {
                 .checked_mul(ctx.accounts.option_mint.supply)
                 .unwrap();
 
+            ctx.accounts.option_account.profit_per_option = profit_per_option;
             ctx.accounts.option_account.remaining_collateral =
                 ctx.accounts.vault.amount.checked_sub(total_profit).unwrap();
         }
@@ -567,7 +570,6 @@ pub struct OptionAccount {
     pub expiry: u64,
     pub settlement_price: u64,
 
-    pub mint_supply_at_settlement: u64,
     pub profit_per_option: u64,
     pub remaining_collateral: u64,
 }
