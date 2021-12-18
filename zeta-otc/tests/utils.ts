@@ -197,3 +197,16 @@ export async function expectError(fn: Function, errorString: String) {
     return false;
   });
 }
+
+export async function sleepTillTime(epochTimeSeconds: number) {
+  let currTime = new Date();
+  let timeToSleepMs = epochTimeSeconds * 1000 - currTime.getTime();
+  if (timeToSleepMs > 0) {
+    console.log("Sleeping for : ", timeToSleepMs);
+    await sleep(timeToSleepMs + 1000);
+  }
+}
+
+export async function sleep(ms) {
+  await new Promise((resolve) => setTimeout(resolve, ms, undefined));
+}

@@ -47,8 +47,9 @@ describe("zeta-otc", () => {
   let minLotSize = getMinLotSize(decimals);
   let expectedOptionTokenSupply = collateralAmount / minLotSize;
   // 10 seconds in future of creation.
-  let expirationOffset = 20;
+  let expirationOffset = 5;
   let expirationTs: number;
+  let settlementPriceThresholdSeconds = 5;
 
   it("Create mint and mint to user.", async () => {
     token = await utils.createMint(
@@ -105,6 +106,7 @@ describe("zeta-otc", () => {
       stateNonce,
       mintAuthNonce,
       vaultAuthNonce,
+      settlementPriceThresholdSeconds,
     };
 
     await program.rpc.initializeState(args, {
@@ -332,5 +334,51 @@ describe("zeta-otc", () => {
     assert.ok(userTokenAccount.amount.toNumber() == collateralAmount / 2);
   });
 
-  it("Close option contract", async () => {});
+  it("Cannot close option account before close time.", async () => {
+    await utils.expectError(async () => {
+      await program.rpc.closeOptionAccount({
+        accounts: {
+          state,
+          underlying,
+          vault,
+          underlyingMint: token.publicKey,
+          underlyingTokenAccount: userTokenAddress,
+          creator: provider.wallet.publicKey,
+          optionAccount,
+          mintAuthority,
+          optionMint,
+          userOptionTokenAccount,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          vaultAuthority,
+        },
+      });
+    }, "Not past option close time");
+  });
+
+  it("Close option account.", async () => {
+    await utils.sleepTillTime(expirationTs);
+
+    await program.rpc.closeOptionAccount({
+      accounts: {
+        state,
+        underlying,
+        vault,
+        underlyingMint: token.publicKey,
+        underlyingTokenAccount: userTokenAddress,
+        creator: provider.wallet.publicKey,
+        optionAccount,
+        mintAuthority,
+        optionMint,
+        userOptionTokenAccount,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        vaultAuthority,
+      },
+    });
+
+    let userTokenAccount = await utils.getTokenAccountInfo(
+      provider.connection,
+      userTokenAddress
+    );
+    assert.ok(userTokenAccount.amount.toNumber() == collateralAmount);
+  });
 });
