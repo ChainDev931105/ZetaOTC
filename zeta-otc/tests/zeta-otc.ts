@@ -11,6 +11,15 @@ import * as assert from "assert";
 import * as utils from "./utils";
 import { Token, TOKEN_PROGRAM_ID } from "@solana/spl-token";
 
+const OPTION_MINT_DECIMALS: number = 4;
+
+function getMinLotSize(mintDecimals: number): number {
+  if (mintDecimals < OPTION_MINT_DECIMALS) {
+    throw Error("");
+  }
+  return 10 ** mintDecimals / 10 ** OPTION_MINT_DECIMALS;
+}
+
 describe("zeta-otc", () => {
   // Configure the client to use the local cluster.
   let provider = anchor.Provider.env();
@@ -35,6 +44,11 @@ describe("zeta-otc", () => {
 
   let collateralAmount = 1_000_000_000_000;
   let decimals = 9;
+  let minLotSize = getMinLotSize(decimals);
+  let expectedOptionTokenSupply = collateralAmount / minLotSize;
+  // 10 seconds in future of creation.
+  let expirationOffset = 20;
+  let expirationTs: number;
 
   it("Create mint and mint to user.", async () => {
     token = await utils.createMint(
@@ -121,31 +135,19 @@ describe("zeta-otc", () => {
         program.programId
       );
 
-    let [_vault, vaultNonce] = await anchor.web3.PublicKey.findProgramAddress(
-      [
-        Buffer.from(anchor.utils.bytes.utf8.encode("vault")),
-        token.publicKey.toBuffer(),
-      ],
-      program.programId
-    );
-
     underlying = _underlying;
-    vault = _vault;
 
     let args = {
       underlyingNonce,
-      vaultNonce,
     };
 
     await program.rpc.initializeUnderlying(args, {
       accounts: {
         state,
         underlying,
-        vault,
         mint: token.publicKey,
         oracle: oracle.publicKey,
         admin: admin.publicKey,
-        vaultAuthority,
         systemProgram: SystemProgram.programId,
         tokenProgram: TOKEN_PROGRAM_ID,
         rent: SYSVAR_RENT_PUBKEY,
@@ -155,13 +157,15 @@ describe("zeta-otc", () => {
 
     let underlyingAccount = await program.account.underlying.fetch(underlying);
     assert.ok(underlyingAccount.underlyingNonce == underlyingNonce);
-    assert.ok(underlyingAccount.vaultNonce == vaultNonce);
     assert.ok(underlyingAccount.mint.equals(token.publicKey));
     assert.ok(underlyingAccount.oracle.equals(oracle.publicKey));
     assert.ok(underlyingAccount.count.eq(new anchor.BN(0)));
   });
 
   it("Initialize option", async () => {
+    let now = Date.now() / 1000;
+    expirationTs = now + expirationOffset;
+
     let count = new anchor.BN(0);
     let [_optionAccount, optionAccountNonce] =
       await anchor.web3.PublicKey.findProgramAddress(
@@ -173,14 +177,27 @@ describe("zeta-otc", () => {
         program.programId
       );
 
+    optionAccount = _optionAccount;
+
+    let [_vault, vaultNonce] = await anchor.web3.PublicKey.findProgramAddress(
+      [
+        Buffer.from(anchor.utils.bytes.utf8.encode("vault")),
+        optionAccount.toBuffer(),
+      ],
+      program.programId
+    );
+
     let [_optionMint, optionMintNonce] =
       await anchor.web3.PublicKey.findProgramAddress(
-        [underlying.toBuffer(), count.toArrayLike(Buffer, "le", 8)],
+        [
+          Buffer.from(anchor.utils.bytes.utf8.encode("option-mint")),
+          optionAccount.toBuffer(),
+        ],
         program.programId
       );
 
-    optionAccount = _optionAccount;
     optionMint = _optionMint;
+    vault = _vault;
 
     let [_userOptionTokenAccount, userOptionTokenAccountNonce] =
       await anchor.web3.PublicKey.findProgramAddress(
@@ -197,18 +214,43 @@ describe("zeta-otc", () => {
       optionAccountNonce,
       optionMintNonce,
       tokenAccountNonce: userOptionTokenAccountNonce,
+      vaultNonce,
       expiry,
       strike,
     };
+
+    await utils.expectError(async () => {
+      await program.rpc.initializeOption(args, {
+        accounts: {
+          state,
+          underlying,
+          vault,
+          vaultAuthority,
+          underlyingMint: token.publicKey,
+          underlyingTokenAccount: userTokenAddress,
+          creator: provider.wallet.publicKey,
+          optionAccount,
+          mintAuthority,
+          optionMint,
+          userOptionTokenAccount,
+          systemProgram: SystemProgram.programId,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          rent: SYSVAR_RENT_PUBKEY,
+        },
+      });
+    }, "Option expiration must be in the future");
+
+    args.expiry = new anchor.BN(expirationTs);
 
     await program.rpc.initializeOption(args, {
       accounts: {
         state,
         underlying,
         vault,
+        vaultAuthority,
         underlyingMint: token.publicKey,
         underlyingTokenAccount: userTokenAddress,
-        authority: provider.wallet.publicKey,
+        creator: provider.wallet.publicKey,
         optionAccount,
         mintAuthority,
         optionMint,
@@ -222,12 +264,18 @@ describe("zeta-otc", () => {
     let optionAccountInfo = await program.account.optionAccount.fetch(
       optionAccount
     );
-    console.log(optionAccountInfo);
     assert.ok(optionAccountInfo.creator.equals(provider.wallet.publicKey));
     assert.ok(optionAccountInfo.optionMint.equals(optionMint));
     assert.ok(optionAccountInfo.underlyingMint.equals(token.publicKey));
     assert.ok(optionAccountInfo.strike.eq(strike));
-    assert.ok(optionAccountInfo.expiry.eq(expiry));
+    assert.ok(optionAccountInfo.expiry.eq(args.expiry));
+    assert.ok(optionAccountInfo.optionAccountNonce == optionAccountNonce);
+    assert.ok(optionAccountInfo.optionMintNonce == optionMintNonce);
+    assert.ok(optionAccountInfo.vaultNonce == vaultNonce);
+    assert.ok(
+      optionAccountInfo.creatorOptionTokenAccountNonce ==
+        userOptionTokenAccountNonce
+    );
 
     let vaultInfo = await utils.getTokenAccountInfo(provider.connection, vault);
     assert.ok(vaultInfo.amount.toNumber() == collateralAmount);
@@ -236,11 +284,20 @@ describe("zeta-otc", () => {
       provider.connection,
       userOptionTokenAccount
     );
-    assert.ok(userOptionTokenAccountInfo.amount.toNumber() == collateralAmount);
+    assert.ok(
+      userOptionTokenAccountInfo.amount.toNumber() == expectedOptionTokenSupply
+    );
+    let mintInfo = await utils.getMintInfo(provider.connection, optionMint);
+    assert.ok(mintInfo.decimals == OPTION_MINT_DECIMALS);
+    assert.ok(mintInfo.supply.toNumber() == expectedOptionTokenSupply);
+    assert.ok(mintInfo.mintAuthority.equals(mintAuthority));
+
+    let underlyingAccount = await program.account.underlying.fetch(underlying);
+    assert.ok(underlyingAccount.count.eq(new anchor.BN(1)));
   });
 
   it("Burn options", async () => {
-    let burnAmount = new anchor.BN(collateralAmount / 2);
+    let burnAmount = new anchor.BN(expectedOptionTokenSupply / 2);
     await program.rpc.burnOption(burnAmount, {
       accounts: {
         state,
@@ -248,7 +305,7 @@ describe("zeta-otc", () => {
         vault,
         underlyingMint: token.publicKey,
         underlyingTokenAccount: userTokenAddress,
-        authority: provider.wallet.publicKey,
+        creator: provider.wallet.publicKey,
         optionAccount,
         mintAuthority,
         optionMint,
@@ -262,8 +319,10 @@ describe("zeta-otc", () => {
       provider.connection,
       userOptionTokenAccount
     );
+
     assert.ok(
-      userOptionTokenAccountInfo.amount.toNumber() == collateralAmount / 2
+      userOptionTokenAccountInfo.amount.toNumber() ==
+        expectedOptionTokenSupply / 2
     );
 
     let userTokenAccount = await utils.getTokenAccountInfo(
@@ -272,4 +331,6 @@ describe("zeta-otc", () => {
     );
     assert.ok(userTokenAccount.amount.toNumber() == collateralAmount / 2);
   });
+
+  it("Close option contract", async () => {});
 });

@@ -4,6 +4,7 @@ import {
   MintLayout,
   TOKEN_PROGRAM_ID,
   u64,
+  MintInfo,
 } from "@solana/spl-token";
 import {
   ConfirmOptions,
@@ -17,6 +18,7 @@ import {
   SYSVAR_RENT_PUBKEY,
 } from "@solana/web3.js";
 import BufferLayout from "buffer-layout";
+import * as assert from "assert";
 
 export async function createMint(
   connection: Connection,
@@ -150,4 +152,48 @@ export async function getTokenAccountInfo(
   }
 
   return accountInfo;
+}
+
+export async function getMintInfo(
+  connection: Connection,
+  mint: PublicKey
+): Promise<MintInfo> {
+  const info = await connection.getAccountInfo(mint);
+
+  if (info === null) {
+    throw new Error("Failed to find mint account");
+  }
+
+  if (info.data.length != MintLayout.span) {
+    throw new Error(`Invalid mint size`);
+  }
+
+  const data = Buffer.from(info.data);
+  const mintInfo = MintLayout.decode(data);
+
+  if (mintInfo.mintAuthorityOption === 0) {
+    mintInfo.mintAuthority = null;
+  } else {
+    mintInfo.mintAuthority = new PublicKey(mintInfo.mintAuthority);
+  }
+
+  mintInfo.supply = u64.fromBuffer(mintInfo.supply);
+  mintInfo.isInitialized = mintInfo.isInitialized != 0;
+
+  if (mintInfo.freezeAuthorityOption === 0) {
+    mintInfo.freezeAuthority = null;
+  } else {
+    mintInfo.freezeAuthority = new PublicKey(mintInfo.freezeAuthority);
+  }
+
+  return mintInfo;
+}
+
+export async function expectError(fn: Function, errorString: String) {
+  await assert.rejects(fn(), (err: any) => {
+    if (err.msg === errorString) {
+      return true;
+    }
+    return false;
+  });
 }
