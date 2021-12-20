@@ -19,6 +19,7 @@ import {
 } from "@solana/web3.js";
 import BufferLayout from "buffer-layout";
 import * as assert from "assert";
+import * as config from "../config.json";
 
 export async function createMint(
   connection: Connection,
@@ -209,4 +210,8 @@ export async function sleepTillTime(epochTimeSeconds: number) {
 
 export async function sleep(ms) {
   await new Promise((resolve) => setTimeout(resolve, ms, undefined));
+}
+
+export function getOracleKeypair(): Keypair {
+  return Keypair.fromSecretKey(Buffer.from(config.oracle_keypair));
 }

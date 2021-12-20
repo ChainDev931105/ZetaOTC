@@ -12,7 +12,7 @@ pub const VAULT_SEED: &str = "vault";
 pub const OPTION_ACCOUNT_SEED: &str = "option-account";
 pub const OPTION_MINT_SEED: &str = "option-mint";
 pub const OPTION_MINT_DECIMALS: u8 = 4;
-pub const USDC_DECIMALS: u32 = 32;
+pub const USDC_DECIMALS: u32 = 6;
 
 #[program]
 pub mod zeta_otc {
@@ -26,6 +26,8 @@ pub mod zeta_otc {
         ctx.accounts.state.mint_auth_nonce = args.mint_auth_nonce;
         ctx.accounts.state.vault_auth_nonce = args.vault_auth_nonce;
         ctx.accounts.state.admin = ctx.accounts.admin.key();
+        ctx.accounts.state.settlement_price_threshold_seconds =
+            args.settlement_price_threshold_seconds;
         Ok(())
     }
 
@@ -92,6 +94,7 @@ pub mod zeta_otc {
         Ok(())
     }
 
+    // TODO can you only burn the whole amount?
     pub fn burn_option(ctx: Context<BurnOption>, amount: u64) -> ProgramResult {
         let clock = Clock::get()?;
 
@@ -135,18 +138,50 @@ pub mod zeta_otc {
         Ok(())
     }
 
-    pub fn set_settlement_price(ctx: Context<SetSettlementPrice>) -> ProgramResult {
+    pub fn expire_option_override(
+        ctx: Context<ExpireOptionOverride>,
+        override_price: u64,
+    ) -> ProgramResult {
+        let clock = Clock::get()?;
+        let option_account = &ctx.accounts.option_account;
+
+        let end = option_account
+            .expiry
+            .checked_add(ctx.accounts.state.settlement_price_threshold_seconds.into())
+            .unwrap();
+
+        if clock.unix_timestamp > end as i64 {
+            msg!(
+                "Current time {} > Settlement end {}",
+                clock.unix_timestamp,
+                end
+            );
+            return Err(ErrorCode::AfterSetSettlementPriceTime.into());
+        }
+
+        ctx.accounts.option_account.settlement_price = override_price;
+        set_profit_and_remaining_collateral(
+            &mut ctx.accounts.option_account,
+            ctx.accounts.vault.amount,
+            &ctx.accounts.underlying_mint,
+            ctx.accounts.option_mint.supply,
+        )?;
+
+        Ok(())
+    }
+
+    pub fn expire_option(ctx: Context<ExpireOption>) -> ProgramResult {
         let clock = Clock::get()?;
         let option_account = &ctx.accounts.option_account;
 
         let start = option_account
             .expiry
-            .checked_sub(ctx.accounts.state.settlement_price_threshold_seconds)
+            .checked_sub(ctx.accounts.state.settlement_price_threshold_seconds.into())
             .unwrap();
 
         let end = option_account
             .expiry
-            .checked_add(ctx.accounts.state.settlement_price_threshold_seconds)
+            .checked_add(ctx.accounts.state.settlement_price_threshold_seconds.into())
             .unwrap();
 
         if clock.unix_timestamp < start as i64 {
@@ -167,6 +202,7 @@ pub mod zeta_otc {
             return Err(ErrorCode::AfterSetSettlementPriceTime.into());
         }
 
+        // Cannot expire more than once.
         if ctx.accounts.option_account.settlement_price != 0 {
             msg!(
                 "Settlement price set at {}",
@@ -176,56 +212,61 @@ pub mod zeta_otc {
         }
 
         let oracle_price = get_oracle_price(&ctx.accounts.oracle) as u64;
-
         ctx.accounts.option_account.settlement_price = oracle_price;
-        // ctx.accounts.option_account.mint_supply_at_settlement = ctx.accounts.option_mint.supply;
+        set_profit_and_remaining_collateral(
+            &mut ctx.accounts.option_account,
+            ctx.accounts.vault.amount,
+            &ctx.accounts.underlying_mint,
+            ctx.accounts.option_mint.supply,
+        )?;
+        Ok(())
+    }
 
-        // If the option has expired worthless
-        if oracle_price <= ctx.accounts.option_account.strike {
-            ctx.accounts.option_account.profit_per_option = 0;
-            ctx.accounts.option_account.remaining_collateral = ctx.accounts.vault.amount;
-        } else {
-            let itm_amount = oracle_price
-                .checked_sub(ctx.accounts.option_account.strike)
-                .unwrap();
-
-            // 100_000
-            let token_amount_per_option =
-                get_token_amount_per_option(&ctx.accounts.underlying_mint);
-
-            // (Oracle spot - strike) / oracle_spot) * units of underlying per option
-            let profit_per_option = token_amount_per_option
-                .checked_mul(itm_amount)
-                .unwrap()
-                .checked_div(oracle_price)
-                .unwrap();
-
-            let total_profit = profit_per_option
-                .checked_mul(ctx.accounts.option_mint.supply)
-                .unwrap();
-
-            ctx.accounts.option_account.profit_per_option = profit_per_option;
-            ctx.accounts.option_account.remaining_collateral =
-                ctx.accounts.vault.amount.checked_sub(total_profit).unwrap();
+    pub fn exercise_option(ctx: Context<ExerciseOption>) -> ProgramResult {
+        if ctx.accounts.option_account.settlement_price == 0 {
+            return Err(ErrorCode::SettlementPriceNotSet.into());
         }
+
+        let clock = Clock::get()?;
+        if clock.unix_timestamp < ctx.accounts.option_account.expiry as i64 {
+            return Err(ErrorCode::OptionHasNotExpiredYet.into());
+        }
+
+        let total_profit = ctx
+            .accounts
+            .option_account
+            .profit_per_option
+            .checked_mul(ctx.accounts.user_option_token_account.amount)
+            .unwrap();
+
+        let vault_seeds = vault_authority! {
+            bump = ctx.accounts.state.vault_auth_nonce
+        };
+
+        // Transfer what remains of the vault account into the creator's token account.
+        token::transfer(
+            ctx.accounts
+                .into_transfer_context()
+                .with_signer(&[&vault_seeds[..]]),
+            total_profit,
+        )?;
+
+        token::burn(
+            ctx.accounts.into_burn_context(),
+            ctx.accounts.user_option_token_account.amount,
+        )?;
 
         Ok(())
     }
 
-    pub fn close_option_account(ctx: Context<CloseOptionAccount>) -> ProgramResult {
-        let option_account = &ctx.accounts.option_account;
+    pub fn collect_remaining_collateral(ctx: Context<CollectRemainingCollateral>) -> ProgramResult {
+        if ctx.accounts.option_account.settlement_price == 0 {
+            return Err(ErrorCode::SettlementPriceNotSet.into());
+        }
+
         let clock = Clock::get()?;
-        let close_timestamp = option_account.expiry;
-
-        if clock.unix_timestamp < close_timestamp as i64 {
-            msg!(
-                "Clock timestamp: {}, Close timestamp: {}, Diff = {}",
-                clock.unix_timestamp,
-                close_timestamp,
-                close_timestamp - (clock.unix_timestamp as u64)
-            );
-
-            return Err(ErrorCode::NotPastOptionCloseTime.into());
+        if clock.unix_timestamp < ctx.accounts.option_account.expiry as i64 {
+            return Err(ErrorCode::OptionHasNotExpiredYet.into());
         }
 
         let vault_seeds = vault_authority! {
@@ -237,22 +278,11 @@ pub mod zeta_otc {
             ctx.accounts
                 .into_transfer_context()
                 .with_signer(&[&vault_seeds[..]]),
-            ctx.accounts.vault.amount,
+            ctx.accounts.option_account.remaining_collateral,
         )?;
-
-        // Close vault account.
-        token::close_account(
-            ctx.accounts
-                .into_close_vault_context()
-                .with_signer(&[&vault_seeds[..]]),
-        )?;
-
-        token::burn(
-            ctx.accounts.into_burn_context(),
-            ctx.accounts.user_option_token_account.amount,
-        )?;
-
         token::close_account(ctx.accounts.into_close_user_token_account())?;
+
+        ctx.accounts.option_account.remaining_collateral = 0;
 
         Ok(())
     }
@@ -373,7 +403,7 @@ pub struct InitializeOption<'info> {
 }
 
 #[derive(Accounts)]
-pub struct SetSettlementPrice<'info> {
+pub struct ExpireOption<'info> {
     pub state: Box<Account<'info, State>>,
     #[account(
         mut,
@@ -404,10 +434,30 @@ pub struct SetSettlementPrice<'info> {
 }
 
 #[derive(Accounts)]
-pub struct SetSettlementPriceOverride<'info> {
+pub struct ExpireOptionOverride<'info> {
     pub state: Box<Account<'info, State>>,
-    #[account(mut)]
+    #[account(
+        mut,
+        seeds = [UNDERLYING_SEED.as_bytes().as_ref(), underlying_mint.key().as_ref()],
+        bump = underlying.underlying_nonce,
+    )]
+    pub underlying: Box<Account<'info, Underlying>>,
+    pub underlying_mint: Box<Account<'info, Mint>>,
+    #[account(
+        mut,
+        seeds = [OPTION_ACCOUNT_SEED.as_bytes().as_ref(), underlying.key().as_ref(), &option_account.underlying_count.to_le_bytes()],
+        bump = option_account.option_account_nonce,
+    )]
     pub option_account: Box<Account<'info, OptionAccount>>,
+    #[account(
+        constraint = option_mint.key() == option_account.option_mint @ ErrorCode::InvalidOracle
+    )]
+    pub option_mint: Account<'info, Mint>,
+    #[account(
+        seeds = [VAULT_SEED.as_bytes().as_ref(), option_account.key().as_ref()],
+        bump = option_account.vault_nonce,
+    )]
+    pub vault: Account<'info, TokenAccount>,
     #[account(
         constraint = admin.key() == state.admin @ ErrorCode::OnlyAdminCanOverrideSettlementPrice
     )]
@@ -473,7 +523,57 @@ pub struct BurnOption<'info> {
 }
 
 #[derive(Accounts)]
-pub struct CloseOptionAccount<'info> {
+pub struct ExerciseOption<'info> {
+    pub state: Box<Account<'info, State>>,
+    #[account(
+        seeds = [UNDERLYING_SEED.as_bytes().as_ref(), underlying_mint.key().as_ref()],
+        bump = underlying.underlying_nonce,
+    )]
+    pub underlying: Box<Account<'info, Underlying>>,
+    #[account(
+        mut,
+        seeds = [VAULT_SEED.as_bytes().as_ref(), option_account.key().as_ref()],
+        bump = option_account.vault_nonce,
+    )]
+    pub vault: Box<Account<'info, TokenAccount>>,
+    pub underlying_mint: Box<Account<'info, Mint>>,
+    #[account(
+        mut,
+        constraint = underlying_token_account.mint == underlying_mint.key() @ ErrorCode::TokenAccountMintMismatch,
+        constraint = underlying_token_account.owner == authority.key() @ ErrorCode::InvalidTokenAccountOwner,
+    )]
+    pub underlying_token_account: Box<Account<'info, TokenAccount>>,
+    #[account(mut)]
+    pub authority: Signer<'info>,
+    #[account(
+        mut,
+        seeds = [OPTION_ACCOUNT_SEED.as_bytes().as_ref(), underlying.key().as_ref(), &option_account.underlying_count.to_le_bytes()],
+        bump = option_account.option_account_nonce,
+    )]
+    pub option_account: Box<Account<'info, OptionAccount>>,
+    #[account(
+        mut,
+        seeds = [OPTION_MINT_SEED.as_bytes().as_ref(), option_account.key().as_ref()],
+        bump = option_account.option_mint_nonce,
+        constraint = option_mint.key() == option_account.option_mint @ ErrorCode::OptionMintMismatch
+    )]
+    pub option_mint: Box<Account<'info, Mint>>,
+    #[account(
+        mut,
+        constraint = user_option_token_account.owner == authority.key() @ ErrorCode::OwnerMismatch,
+        constraint = user_option_token_account.mint == option_mint.key() @ ErrorCode::TokenAccountMintMismatch,
+    )]
+    pub user_option_token_account: Box<Account<'info, TokenAccount>>,
+    pub token_program: Program<'info, Token>,
+    #[account(
+        seeds = [VAULT_AUTH_SEED.as_bytes().as_ref()],
+        bump = state.vault_auth_nonce,
+    )]
+    pub vault_authority: AccountInfo<'info>,
+}
+
+#[derive(Accounts)]
+pub struct CollectRemainingCollateral<'info> {
     pub state: Box<Account<'info, State>>,
     #[account(
         seeds = [UNDERLYING_SEED.as_bytes().as_ref(), underlying_mint.key().as_ref()],
@@ -502,14 +602,8 @@ pub struct CloseOptionAccount<'info> {
         mut,
         seeds = [OPTION_ACCOUNT_SEED.as_bytes().as_ref(), underlying.key().as_ref(), &option_account.underlying_count.to_le_bytes()],
         bump = option_account.option_account_nonce,
-        close = creator,
     )]
     pub option_account: Box<Account<'info, OptionAccount>>,
-    #[account(
-        seeds = [MINT_AUTH_SEED.as_bytes().as_ref()],
-        bump = state.mint_auth_nonce,
-    )]
-    pub mint_authority: AccountInfo<'info>,
     #[account(
         mut,
         seeds = [OPTION_MINT_SEED.as_bytes().as_ref(), option_account.key().as_ref()],
@@ -546,7 +640,7 @@ pub struct InitializeStateArgs {
     pub state_nonce: u8,
     pub mint_auth_nonce: u8,
     pub vault_auth_nonce: u8,
-    pub settlement_price_threshold_seconds: u64,
+    pub settlement_price_threshold_seconds: u32,
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize)]
@@ -590,7 +684,7 @@ pub struct State {
     pub mint_auth_nonce: u8,
     pub vault_auth_nonce: u8,
     pub admin: Pubkey,
-    pub settlement_price_threshold_seconds: u64,
+    pub settlement_price_threshold_seconds: u32,
 }
 
 impl<'info> InitializeOption<'info> {
@@ -633,20 +727,11 @@ impl<'info> BurnOption<'info> {
     }
 }
 
-impl<'info> CloseOptionAccount<'info> {
+impl<'info> CollectRemainingCollateral<'info> {
     pub fn into_transfer_context(&self) -> CpiContext<'_, '_, '_, 'info, Transfer<'info>> {
         let cpi_accounts = Transfer {
             from: self.vault.to_account_info().clone(),
             to: self.underlying_token_account.to_account_info().clone(),
-            authority: self.vault_authority.to_account_info().clone(),
-        };
-        CpiContext::new(self.token_program.to_account_info().clone(), cpi_accounts)
-    }
-
-    pub fn into_close_vault_context(&self) -> CpiContext<'_, '_, '_, 'info, CloseAccount<'info>> {
-        let cpi_accounts = CloseAccount {
-            account: self.vault.to_account_info().clone(),
-            destination: self.creator.to_account_info().clone(),
             authority: self.vault_authority.to_account_info().clone(),
         };
         CpiContext::new(self.token_program.to_account_info().clone(), cpi_accounts)
@@ -662,12 +747,23 @@ impl<'info> CloseOptionAccount<'info> {
         };
         CpiContext::new(self.token_program.to_account_info().clone(), cpi_accounts)
     }
+}
+
+impl<'info> ExerciseOption<'info> {
+    pub fn into_transfer_context(&self) -> CpiContext<'_, '_, '_, 'info, Transfer<'info>> {
+        let cpi_accounts = Transfer {
+            from: self.vault.to_account_info().clone(),
+            to: self.underlying_token_account.to_account_info().clone(),
+            authority: self.vault_authority.to_account_info().clone(),
+        };
+        CpiContext::new(self.token_program.to_account_info().clone(), cpi_accounts)
+    }
 
     pub fn into_burn_context(&self) -> CpiContext<'_, '_, '_, 'info, Burn<'info>> {
         let cpi_accounts = Burn {
             mint: self.option_mint.to_account_info().clone(),
             to: self.user_option_token_account.to_account_info().clone(),
-            authority: self.creator.to_account_info().clone(),
+            authority: self.authority.to_account_info().clone(),
         };
         CpiContext::new(self.token_program.to_account_info().clone(), cpi_accounts)
     }
@@ -675,6 +771,7 @@ impl<'info> CloseOptionAccount<'info> {
 
 pub fn get_oracle_price(oracle: &AccountInfo) -> u128 {
     let oracle_price = pc::Price::load(&oracle).unwrap();
+    msg!("oracle price {}", oracle_price.agg.price);
     (oracle_price.agg.price as u128)
         .checked_mul(10u128.pow(USDC_DECIMALS))
         .unwrap()
@@ -703,6 +800,41 @@ pub fn get_token_amount_per_option(mint_account: &Mint) -> u64 {
         .unwrap()
 }
 
+pub fn set_profit_and_remaining_collateral(
+    option_account: &mut OptionAccount,
+    vault_amount: u64,
+    mint: &Mint,
+    option_supply: u64,
+) -> Result<()> {
+    assert!(option_account.settlement_price != 0);
+    // If the option has expired worthless
+    if option_account.settlement_price <= option_account.strike {
+        option_account.profit_per_option = 0;
+        option_account.remaining_collateral = vault_amount;
+    } else {
+        let itm_amount = option_account
+            .settlement_price
+            .checked_sub(option_account.strike)
+            .unwrap();
+
+        // 100_000
+        let token_amount_per_option = get_token_amount_per_option(&mint);
+
+        // (Oracle spot - strike) / oracle_spot) * units of underlying per option
+        let profit_per_option = token_amount_per_option
+            .checked_mul(itm_amount)
+            .unwrap()
+            .checked_div(option_account.settlement_price)
+            .unwrap();
+
+        let total_profit = profit_per_option.checked_mul(option_supply).unwrap();
+        option_account.profit_per_option = profit_per_option;
+        option_account.remaining_collateral = vault_amount.checked_sub(total_profit).unwrap();
+    }
+
+    Ok(())
+}
+
 #[error]
 pub enum ErrorCode {
     #[msg("Unauthorized admin")]
@@ -721,16 +853,18 @@ pub enum ErrorCode {
     OnlyCreatorCanBurnOptions,
     #[msg("Option expiration must be in the future")]
     OptionExpirationMustBeInTheFuture,
-    #[msg("Not past option close time")]
-    NotPastOptionCloseTime,
+    #[msg("Option has not expired yet")]
+    OptionHasNotExpiredYet,
     #[msg("Only admin can override settlement price")]
     OnlyAdminCanOverrideSettlementPrice,
     #[msg("Before set settlement price time")]
     BeforeSetSettlementPriceTime,
     #[msg("After set settlement price time")]
     AfterSetSettlementPriceTime,
-    #[msg("SettlementPriceAlreadySet")]
+    #[msg("Settlement price already set")]
     SettlementPriceAlreadySet,
+    #[msg("SettlementPriceNotSet")]
+    SettlementPriceNotSet,
     #[msg("InvalidOracle")]
     InvalidOracle,
     #[msg("Invalid settlment option mint")]
@@ -739,4 +873,8 @@ pub enum ErrorCode {
     CannotBurnOptionsAfterExpiry,
     #[msg("Cannot burn options after settlement price is set")]
     CannotBurnOptionsAfterSettlementPriceIsSet,
+    #[msg("Owner mismatch")]
+    OwnerMismatch,
+    #[msg("Option mint mismatch")]
+    OptionMintMismatch,
 }
