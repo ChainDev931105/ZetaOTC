@@ -2,7 +2,7 @@
 use anchor_lang::prelude::*;
 pub mod pc;
 
-declare_id!("3BkgqQAfo73bxTUDiPCD8KSGdpvsoTriR6pKrcguQCBs");
+declare_id!("GVK6v9UnRA2ZuJcLQXicF1jkMwdKgprdvgUSVsTDfSim");
 
 #[program]
 pub mod pyth {

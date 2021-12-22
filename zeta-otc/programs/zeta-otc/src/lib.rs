@@ -2,7 +2,7 @@ use anchor_lang::prelude::*;
 use anchor_spl::token::{self, Burn, CloseAccount, Mint, MintTo, Token, TokenAccount, Transfer};
 use pyth::pc;
 
-declare_id!("Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS");
+declare_id!("4HA5LaXGeijJA3QTtdEKCXJwyf6PTSGB9CfoZAvmtkT1");
 
 pub const UNDERLYING_SEED: &str = "underlying";
 pub const STATE_SEED: &str = "state";
