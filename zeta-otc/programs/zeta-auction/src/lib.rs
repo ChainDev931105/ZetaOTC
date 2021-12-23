@@ -56,7 +56,11 @@ pub mod zeta_auction {
     ) -> ProgramResult {
         // check if valid bidding
 
+        let auction_account = &mut ctx.accounts.auction_account;
+        let collateral_amount = bid_price * auction_account.auction_amount;
+
         // deposit collateral asset to vault
+        token::transfer(ctx.accounts.into_transfer_context(), collateral_amount);
 
         Ok(())
     }
@@ -191,6 +195,13 @@ pub struct PlaceBid<'info> {
         bump = auction_account.auction_account_nonce,
     )]
     pub auction_account: Box<Account<'info, AuctionAccount>>,
+    #[account(mut)]
+    pub bidder_bid_token_account: Account<'info, TokenAccount>,
+    #[account(mut)]
+    pub bidder: Signer<'info>,
+    #[account(mut)]
+    pub vault: Account<'info, TokenAccount>,
+    pub token_program: Program<'info, Token>,
 }
 
 #[derive(Accounts)]
@@ -274,6 +285,17 @@ impl<'info> InitializeAuction<'info> {
             from: self.underlying_token_account.to_account_info().clone(),
             to: self.vault.to_account_info().clone(),
             authority: self.creator.to_account_info().clone(),
+        };
+        CpiContext::new(self.token_program.to_account_info().clone(), cpi_accounts)
+    }
+}
+
+impl<'info> PlaceBid<'info> {
+    pub fn into_transfer_context(&self) -> CpiContext<'_, '_, '_, 'info, Transfer<'info>> {
+        let cpi_accounts = Transfer {
+            from: self.bidder_bid_token_account.to_account_info().clone(),
+            to: self.vault.to_account_info().clone(),
+            authority: self.bidder.to_account_info().clone(),
         };
         CpiContext::new(self.token_program.to_account_info().clone(), cpi_accounts)
     }
