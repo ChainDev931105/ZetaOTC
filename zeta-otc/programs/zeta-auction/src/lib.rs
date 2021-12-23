@@ -57,7 +57,7 @@ pub mod zeta_auction {
         // check if valid bidding
 
         let auction_account = &mut ctx.accounts.auction_account;
-        let collateral_amount = bid_price * auction_account.auction_amount;
+        let collateral_amount = bid_price * auction_account.auction_amount; // TODO : should divide by pow10decimal
 
         // deposit collateral asset to vault
         token::transfer(ctx.accounts.into_transfer_context(), collateral_amount);
@@ -75,9 +75,9 @@ pub mod zeta_auction {
         // withdraw collateral
         let bid_account = &mut ctx.accounts.bid_account;
         let auction_account = &mut ctx.accounts.auction_account;
-        let collateral_amount = bid_account.bid_price * auction_account.auction_amount;
+        let collateral_amount = bid_account.bid_price * auction_account.auction_amount; // TODO : should divide by pow10decimal
 
-        //token::transfer(ctx.accounts.into_transfer_context(), collateral_amount);
+        token::transfer(ctx.accounts.into_transfer_context(), collateral_amount);
 
         Ok(())
     }
@@ -100,10 +100,17 @@ pub mod zeta_auction {
         // check if it is in cooldown period
 
         // transfer underlying token to bidder
+        let bid_account = &mut ctx.accounts.bid_account;
+        let auction_account = &mut ctx.accounts.auction_account;
+        let collateral_amount = bid_account.bid_price * auction_account.auction_amount; // TODO : should divide by pow10decimal
+
+        token::transfer(ctx.accounts.into_transfer_context(), collateral_amount);
 
         // transfer bid token to creator
 
         // cancel all other bids
+
+
         Ok(())
     }
 
@@ -205,6 +212,8 @@ pub struct PlaceBid<'info> {
     #[account(mut)]
     pub bidder: Signer<'info>,
     #[account(mut)]
+    pub admin: Signer<'info>,
+    #[account(mut)]
     pub vault: Account<'info, TokenAccount>,
     pub token_program: Program<'info, Token>,
 }
@@ -215,18 +224,60 @@ pub struct CancelBid<'info> {
     pub bid_account: Box<Account<'info, BidAccount>>,
     #[account(mut)]
     pub auction_account: Box<Account<'info, AuctionAccount>>,
+    #[account(mut)]
+    pub bidder_bid_token_account: Account<'info, TokenAccount>,
+    #[account(mut)]
+    pub bidder: Signer<'info>,
+    #[account(mut)]
+    pub admin: Signer<'info>,
+    #[account(mut)]
+    pub vault: Account<'info, TokenAccount>,
+    pub token_program: Program<'info, Token>,
 }
 
 #[derive(Accounts)]
-pub struct WithdrawCollateral {
+pub struct WithdrawCollateral<'info> {
+    #[account(mut)]
+    pub bid_account: Box<Account<'info, BidAccount>>,
+    #[account(mut)]
+    pub auction_account: Box<Account<'info, AuctionAccount>>,
+    #[account(mut)]
+    pub bidder_bid_token_account: Account<'info, TokenAccount>,
+    #[account(mut)]
+    pub bidder: Signer<'info>,
+    #[account(mut)]
+    pub admin: Signer<'info>,
+    #[account(mut)]
+    pub vault: Account<'info, TokenAccount>,
+    pub token_program: Program<'info, Token>,
 }
 
 #[derive(Accounts)]
-pub struct AcceptBid {
+pub struct AcceptBid<'info> {
+    #[account(mut)]
+    pub bid_account: Box<Account<'info, BidAccount>>,
+    #[account(mut)]
+    pub auction_account: Box<Account<'info, AuctionAccount>>,
+    #[account(mut)]
+    pub bidder_bid_token_account: Account<'info, TokenAccount>,
+    #[account(mut)]
+    pub bidder: Signer<'info>,
+    #[account(mut)]
+    pub admin: Signer<'info>,
+    #[account(mut)]
+    pub vault: Account<'info, TokenAccount>,
+    pub token_program: Program<'info, Token>,
 }
 
 #[derive(Accounts)]
-pub struct TerminateAuction {
+pub struct TerminateAuction<'info> {
+    #[account(mut)]
+    pub auction_account: Box<Account<'info, AuctionAccount>>,
+    #[account(mut)]
+    pub admin: Signer<'info>,
+    #[account(mut)]
+    pub vault: Account<'info, TokenAccount>,
+    pub token_program: Program<'info, Token>,
 }
 
 // args
@@ -311,11 +362,44 @@ impl<'info> PlaceBid<'info> {
 }
 
 impl<'info> CancelBid<'info> {
+    pub fn into_transfer_context(&self) -> CpiContext<'_, '_, '_, 'info, Transfer<'info>> {
+        let cpi_accounts = Transfer {
+            from: self.vault.to_account_info().clone(),
+            to: self.bidder_bid_token_account.to_account_info().clone(),
+            authority: self.admin.to_account_info().clone(),
+        };
+        CpiContext::new(self.token_program.to_account_info().clone(), cpi_accounts)
+    }
+}
+
+impl<'info> WithdrawCollateral<'info> {
     // pub fn into_transfer_context(&self) -> CpiContext<'_, '_, '_, 'info, Transfer<'info>> {
     //     let cpi_accounts = Transfer {
-    //         from: self.bidder_bid_token_account.to_account_info().clone(),
+    //         from: self.vault.to_account_info().clone(),
+    //         to: self.bidder_bid_token_account.to_account_info().clone(),
+    //         authority: self.admin.to_account_info().clone(),
+    //     };
+    //     CpiContext::new(self.token_program.to_account_info().clone(), cpi_accounts)
+    // }
+}
+
+impl<'info> AcceptBid<'info> {
+    pub fn into_transfer_context(&self) -> CpiContext<'_, '_, '_, 'info, Transfer<'info>> {
+        let cpi_accounts = Transfer {
+            from: self.vault.to_account_info().clone(),
+            to: self.bidder_bid_token_account.to_account_info().clone(),
+            authority: self.admin.to_account_info().clone(),
+        };
+        CpiContext::new(self.token_program.to_account_info().clone(), cpi_accounts)
+    }
+}
+
+impl<'info> TerminateAuction<'info> {
+    // pub fn into_transfer_context(&self) -> CpiContext<'_, '_, '_, 'info, Transfer<'info>> {
+    //     let cpi_accounts = Transfer {
+    //         from: self.vault.to_account_info().clone(),
     //         to: self.vault.to_account_info().clone(),
-    //         authority: self.bidder.to_account_info().clone(),
+    //         authority: self.admin.to_account_info().clone(),
     //     };
     //     CpiContext::new(self.token_program.to_account_info().clone(), cpi_accounts)
     // }
