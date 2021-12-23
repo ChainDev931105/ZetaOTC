@@ -73,6 +73,11 @@ pub mod zeta_auction {
         // remove bid
 
         // withdraw collateral
+        let bid_account = &mut ctx.accounts.bid_account;
+        let auction_account = &mut ctx.accounts.auction_account;
+        let collateral_amount = bid_account.bid_price * auction_account.auction_amount;
+
+        //token::transfer(ctx.accounts.into_transfer_context(), collateral_amount);
 
         Ok(())
     }
@@ -205,7 +210,11 @@ pub struct PlaceBid<'info> {
 }
 
 #[derive(Accounts)]
-pub struct CancelBid {
+pub struct CancelBid<'info> {
+    #[account(mut)]
+    pub bid_account: Box<Account<'info, BidAccount>>,
+    #[account(mut)]
+    pub auction_account: Box<Account<'info, AuctionAccount>>,
 }
 
 #[derive(Accounts)]
@@ -299,6 +308,17 @@ impl<'info> PlaceBid<'info> {
         };
         CpiContext::new(self.token_program.to_account_info().clone(), cpi_accounts)
     }
+}
+
+impl<'info> CancelBid<'info> {
+    // pub fn into_transfer_context(&self) -> CpiContext<'_, '_, '_, 'info, Transfer<'info>> {
+    //     let cpi_accounts = Transfer {
+    //         from: self.bidder_bid_token_account.to_account_info().clone(),
+    //         to: self.vault.to_account_info().clone(),
+    //         authority: self.bidder.to_account_info().clone(),
+    //     };
+    //     CpiContext::new(self.token_program.to_account_info().clone(), cpi_accounts)
+    // }
 }
 
 #[error]
