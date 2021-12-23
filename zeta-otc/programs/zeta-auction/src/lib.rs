@@ -32,7 +32,7 @@ pub mod zeta_auction {
         ctx.accounts.underlying.underlying_nonce = args.underlying_nonce;
         Ok(())
     }
-
+    
     pub fn initialize_auction(
         ctx: Context<InitializeAuction>,
         args: InitializeAuctionArgs,
@@ -42,13 +42,12 @@ pub mod zeta_auction {
             return Err(ErrorCode::AuctionEndTimeMustBeInTheFuture.into());
         }
 
-        let auction_account = &mut ctx.accounts.auction_account;
-
         Ok(())
     }
 
     pub fn place_bid(
-        ctx: Context<PlaceBid>
+        ctx: Context<PlaceBid>,
+        bid_price: u64,
     ) -> ProgramResult {
         Ok(())
     }
@@ -145,7 +144,20 @@ pub struct InitializeAuction<'info> {
 }
 
 #[derive(Accounts)]
-pub struct PlaceBid {
+#[instruction(bid_price: u64)]
+pub struct PlaceBid<'info> {
+    #[account(
+        mut,
+        seeds = [UNDERLYING_SEED.as_bytes().as_ref()],
+        bump = underlying.underlying_nonce,
+    )]
+    pub underlying: Box<Account<'info, Underlying>>,
+    #[account(
+        mut,
+        seeds = [AUCTION_ACCOUNT_SEED.as_bytes().as_ref(), underlying.key().as_ref()],
+        bump = auction_account.auction_account_nonce,
+    )]
+    pub auction_account: Box<Account<'info, AuctionAccount>>,
 }
 
 #[derive(Accounts)]
@@ -190,6 +202,7 @@ pub struct InitializeAuctionArgs {
 #[derive(Default)]
 pub struct AuctionAccount {
     pub auction_account_nonce: u8,
+    pub creator: u8,
 }
 
 #[account]
@@ -204,6 +217,12 @@ pub struct Underlying {
 pub struct State {
     pub state_nonce: u8,
     pub admin: Pubkey,
+}
+
+#[account]
+#[derive(Default)]
+pub struct BidAccount {
+    
 }
 
 #[error]
