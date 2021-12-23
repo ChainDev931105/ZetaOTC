@@ -37,10 +37,13 @@ pub mod zeta_auction {
         ctx: Context<InitializeAuction>,
         args: InitializeAuctionArgs,
     ) -> ProgramResult {
+        // chcek end time is in future
         let clock = Clock::get()?;
         if clock.unix_timestamp > args.bid_end_time as i64 {
             return Err(ErrorCode::AuctionEndTimeMustBeInTheFuture.into());
         }
+
+        // deposit underlying asset to vault
 
         Ok(())
     }
@@ -49,24 +52,47 @@ pub mod zeta_auction {
         ctx: Context<PlaceBid>,
         bid_price: u64,
     ) -> ProgramResult {
+        // check if valid bidding
+
+        // deposit collateral asset to vault
+
         Ok(())
     }
 
     pub fn cancel_bid(
         ctx: Context<CancelBid>
     ) -> ProgramResult {
+        // check if such bid exist
+
+        // remove bid
+
+        // withdraw collateral
+
         Ok(())
     }
 
     pub fn withdraw_collateral(
         ctx: Context<WithdrawCollateral>
     ) -> ProgramResult {
+        // check if it is after cooldown
+
+        // check if unaccpeted
+
+        // withdraw
+
         Ok(())
     }
 
     pub fn accept_bid(
         ctx: Context<AcceptBid>
     ) -> ProgramResult {
+        // check if it is in cooldown period
+
+        // transfer underlying token to bidder
+
+        // transfer bid token to creator
+
+        // cancel all other bids
         Ok(())
     }
 
@@ -208,6 +234,7 @@ pub struct AuctionAccount {
     pub auction_account_nonce: u8,
     pub underlying_token_nonce: u8,
     pub bid_token_nonce: u8,
+    pub accepted_bid: Pubkey,
     pub creator: Pubkey,
 }
 
@@ -216,6 +243,7 @@ pub struct AuctionAccount {
 pub struct BidAccount {
     pub bid_price: u64,
     pub bidder: Pubkey,
+    pub auction_account: Pubkey,
 }
 
 #[account]
