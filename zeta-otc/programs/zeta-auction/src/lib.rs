@@ -201,8 +201,21 @@ pub struct InitializeAuctionArgs {
 #[account]
 #[derive(Default)]
 pub struct AuctionAccount {
+    pub escrow_amount: u64,
+    pub starting_price: u64,
+    pub bid_end_time: u64,
+    pub cooldown_period: u64,
     pub auction_account_nonce: u8,
-    pub creator: u8,
+    pub underlying_token_nonce: u8,
+    pub bid_token_nonce: u8,
+    pub creator: Pubkey,
+}
+
+#[account]
+#[derive(Default)]
+pub struct BidAccount {
+    pub bid_price: u64,
+    pub bidder: Pubkey,
 }
 
 #[account]
@@ -217,12 +230,6 @@ pub struct Underlying {
 pub struct State {
     pub state_nonce: u8,
     pub admin: Pubkey,
-}
-
-#[account]
-#[derive(Default)]
-pub struct BidAccount {
-    
 }
 
 #[error]
