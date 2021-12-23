@@ -25,36 +25,31 @@ pub mod zeta_auction {
     }
 
     pub fn place_bid(
-        ctx: Context<PlaceBid>,
-        args: PlaceBidArgs,
+        ctx: Context<PlaceBid>
     ) -> ProgramResult {
         Ok(())
     }
 
     pub fn cancel_bid(
-        ctx: Context<CancelBid>,
-        args: CancelBidArgs,
+        ctx: Context<CancelBid>
     ) -> ProgramResult {
         Ok(())
     }
 
     pub fn withdraw_collateral(
-        ctx: Context<WithdrawCollateral>,
-        args: WithdrawCollateralArgs,
+        ctx: Context<WithdrawCollateral>
     ) -> ProgramResult {
         Ok(())
     }
 
     pub fn accept_bid(
-        ctx: Context<AcceptBid>,
-        args: AcceptBidArgs,
+        ctx: Context<AcceptBid>
     ) -> ProgramResult {
         Ok(())
     }
 
     pub fn terminate_auction(
-        ctx: Context<TerminateAuction>,
-        args: TerminateAuctionArgs,
+        ctx: Context<TerminateAuction>
     ) -> ProgramResult {
         Ok(())
     }
@@ -78,58 +73,42 @@ pub struct InitializeAuction<'info> {
 }
 
 #[derive(Accounts)]
-#[instruction(args: PlaceBidArgs)]
 pub struct PlaceBid {
 }
 
 #[derive(Accounts)]
-#[instruction(args: CancelBidArgs)]
 pub struct CancelBid {
 }
 
 #[derive(Accounts)]
-#[instruction(args: WithdrawCollateralArgs)]
 pub struct WithdrawCollateral {
 }
 
 #[derive(Accounts)]
-#[instruction(args: AcceptBidArgs)]
 pub struct AcceptBid {
 }
 
 #[derive(Accounts)]
-#[instruction(args: TerminateAuctionArgs)]
 pub struct TerminateAuction {
 }
 
 // args
 #[derive(AnchorSerialize, AnchorDeserialize)]
 pub struct InitializeStateArgs {
+    pub amount: u64,
     pub starting_price: u64,
     pub bid_end_time: u64,
     pub cooldown_period: u64,
+    pub underlying_token_nonce: u8,
+    pub bid_token_nonce: u8,
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize)]
 pub struct InitializeAuctionArgs {
 }
 
-#[derive(AnchorSerialize, AnchorDeserialize)]
-pub struct PlaceBidArgs {
-}
-
-#[derive(AnchorSerialize, AnchorDeserialize)]
-pub struct CancelBidArgs {
-}
-
-#[derive(AnchorSerialize, AnchorDeserialize)]
-pub struct WithdrawCollateralArgs {
-}
-
-#[derive(AnchorSerialize, AnchorDeserialize)]
-pub struct AcceptBidArgs {
-}
-
-#[derive(AnchorSerialize, AnchorDeserialize)]
-pub struct TerminateAuctionArgs {
+#[error]
+pub enum ErrorCode {
+    #[msg("Unauthorized admin")]
+    UnauthorizedAdmin,
 }
