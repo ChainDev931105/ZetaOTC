@@ -8,6 +8,7 @@ pub const STATE_SEED: &str = "state";
 pub const AUCTION_SEED: &str = "auction";
 pub const UNDERLYING_SEED: &str = "underlying";
 pub const AUCTION_ACCOUNT_SEED: &str = "auction-account";
+pub const VAULT_SEED: &str = "vault";
 
 #[program]
 pub mod zeta_auction {
@@ -44,6 +45,7 @@ pub mod zeta_auction {
         }
 
         // deposit underlying asset to vault
+        token::transfer(ctx.accounts.into_transfer_context(), args.auction_amount);
 
         Ok(())
     }
@@ -150,9 +152,14 @@ pub struct InitializeAuction<'info> {
     #[account(
         mut,
         constraint = underlying_token_account.owner == creator.key() @ ErrorCode::InvalidTokenAccountOwner,
-        constraint = underlying_token_account.amount >= args.escrow_amount @ ErrorCode::InsufficientFunds,
+        constraint = underlying_token_account.amount >= args.auction_amount @ ErrorCode::InsufficientFunds,
     )]
     pub underlying_token_account: Box<Account<'info, TokenAccount>>,
+    #[account(
+        seeds = [VAULT_SEED.as_bytes().as_ref(), auction_account.key().as_ref()],
+        bump = args.vault_nonce,
+    )]
+    pub vault: Account<'info, TokenAccount>,
     #[account(mut)]
     pub creator: Signer<'info>,
     #[account(
@@ -215,19 +222,20 @@ pub struct InitializeUnderlyingArgs {
 
 #[derive(AnchorSerialize, AnchorDeserialize)]
 pub struct InitializeAuctionArgs {
-    pub escrow_amount: u64,
+    pub auction_amount: u64,
     pub starting_price: u64,
     pub bid_end_time: u64,
     pub cooldown_period: u64,
     pub auction_account_nonce: u8,
     pub underlying_token_nonce: u8,
     pub bid_token_nonce: u8,
+    pub vault_nonce: u8,
 }
 
 #[account]
 #[derive(Default)]
 pub struct AuctionAccount {
-    pub escrow_amount: u64,
+    pub auction_amount: u64,
     pub starting_price: u64,
     pub bid_end_time: u64,
     pub cooldown_period: u64,
@@ -258,6 +266,17 @@ pub struct Underlying {
 pub struct State {
     pub state_nonce: u8,
     pub admin: Pubkey,
+}
+
+impl<'info> InitializeAuction<'info> {
+    pub fn into_transfer_context(&self) -> CpiContext<'_, '_, '_, 'info, Transfer<'info>> {
+        let cpi_accounts = Transfer {
+            from: self.underlying_token_account.to_account_info().clone(),
+            to: self.vault.to_account_info().clone(),
+            authority: self.creator.to_account_info().clone(),
+        };
+        CpiContext::new(self.token_program.to_account_info().clone(), cpi_accounts)
+    }
 }
 
 #[error]
