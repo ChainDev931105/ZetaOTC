@@ -1,4 +1,5 @@
 use anchor_lang::prelude::*;
+use anchor_spl::token::{self, Burn, CloseAccount, Mint, MintTo, Token, TokenAccount, Transfer};
 
 declare_id!("3ruCKuy5gkAj69A4cvapM6rpeKYbvQvt6esuoC14UZNR");
 
@@ -67,7 +68,13 @@ pub struct InitializeState {
 
 #[derive(Accounts)]
 #[instruction(args: InitializeAuctionArgs)]
-pub struct InitializeAuction {
+pub struct InitializeAuction<'info> {
+    pub underlying_token_account: Box<Account<'info, TokenAccount>>,
+    pub bid_token_account: Box<Account<'info, TokenAccount>>,
+
+    pub system_program: Program<'info, System>,
+    pub token_program: Program<'info, Token>,
+    pub rent: Sysvar<'info, Rent>,
 }
 
 #[derive(Accounts)]
@@ -98,6 +105,9 @@ pub struct TerminateAuction {
 // args
 #[derive(AnchorSerialize, AnchorDeserialize)]
 pub struct InitializeStateArgs {
+    pub starting_price: u64,
+    pub bid_end_time: u64,
+    pub cooldown_period: u64,
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize)]
