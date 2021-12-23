@@ -1,13 +1,13 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{self, Burn, CloseAccount, Mint, MintTo, Token, TokenAccount, Transfer};
+use anchor_spl::token::{self, Burn, CloseAccount, Token, TokenAccount, Transfer};
 
 declare_id!("3ruCKuy5gkAj69A4cvapM6rpeKYbvQvt6esuoC14UZNR");
 
 // seeds
 pub const STATE_SEED: &str = "state";
 pub const AUCTION_SEED: &str = "auction";
-pub const MINT_AUTH_SEED: &str = "mint-auth";
 pub const UNDERLYING_SEED: &str = "underlying";
+pub const AUCTION_ACCOUNT_SEED: &str = "auction-account";
 
 #[program]
 pub mod zeta_auction {
@@ -18,7 +18,6 @@ pub mod zeta_auction {
         args: InitializeStateArgs,
     ) -> ProgramResult {
         ctx.accounts.state.state_nonce = args.state_nonce;
-        ctx.accounts.state.mint_auth_nonce = args.mint_auth_nonce;
         ctx.accounts.state.admin = ctx.accounts.admin.key();
         Ok(())
     }
@@ -30,6 +29,7 @@ pub mod zeta_auction {
         if ctx.accounts.state.admin != ctx.accounts.admin.key() {
             return Err(ErrorCode::UnauthorizedAdmin.into())
         }
+        ctx.accounts.underlying.underlying_nonce = args.underlying_nonce;
         Ok(())
     }
 
@@ -37,6 +37,13 @@ pub mod zeta_auction {
         ctx: Context<InitializeAuction>,
         args: InitializeAuctionArgs,
     ) -> ProgramResult {
+        let clock = Clock::get()?;
+        if clock.unix_timestamp > args.bid_end_time as i64 {
+            return Err(ErrorCode::AuctionEndTimeMustBeInTheFuture.into());
+        }
+
+        let auction_account = &mut ctx.accounts.auction_account;
+
         Ok(())
     }
 
@@ -85,11 +92,6 @@ pub struct InitializeState<'info> {
     pub system_program: Program<'info, System>,
     #[account(mut)]
     pub admin: Signer<'info>,
-    #[account(
-        seeds = [MINT_AUTH_SEED.as_bytes().as_ref()],
-        bump = args.mint_auth_nonce,
-    )]
-    pub mint_authority: AccountInfo<'info>,
 }
 
 #[derive(Accounts)]
@@ -98,12 +100,11 @@ pub struct InitializeUnderlying<'info> {
     pub state: Account<'info, State>,
     #[account(
         init,
-        seeds = [UNDERLYING_SEED.as_bytes().as_ref(), mint.key().as_ref()],
+        seeds = [UNDERLYING_SEED.as_bytes().as_ref()],
         bump = args.underlying_nonce,
         payer = admin,
     )]
     pub underlying: Account<'info, Underlying>,
-    pub mint: Account<'info, Mint>,
     #[account(mut)]
     pub admin: Signer<'info>,
     pub system_program: Program<'info, System>,
@@ -114,9 +115,30 @@ pub struct InitializeUnderlying<'info> {
 #[derive(Accounts)]
 #[instruction(args: InitializeAuctionArgs)]
 pub struct InitializeAuction<'info> {
+    pub state: Box<Account<'info, State>>,
+    #[account(
+        mut,
+        seeds = [UNDERLYING_SEED.as_bytes().as_ref()],
+        bump = underlying.underlying_nonce,
+    )]
+    pub underlying: Box<Account<'info, Underlying>>,
+    #[account(
+        mut,
+        constraint = underlying_token_account.owner == creator.key() @ ErrorCode::InvalidTokenAccountOwner,
+        constraint = underlying_token_account.amount >= args.escrow_amount @ ErrorCode::InsufficientFunds,
+    )]
     pub underlying_token_account: Box<Account<'info, TokenAccount>>,
+    #[account(mut)]
+    pub creator: Signer<'info>,
+    #[account(
+        init,
+        seeds = [AUCTION_ACCOUNT_SEED.as_bytes().as_ref(), underlying.key().as_ref(), &underlying.count.to_le_bytes()],
+        bump = args.auction_account_nonce,
+        payer = creator,
+    )]
+    pub auction_account: Box<Account<'info, AuctionAccount>>,
+    #[account(mut)]
     pub bid_token_account: Box<Account<'info, TokenAccount>>,
-
     pub system_program: Program<'info, System>,
     pub token_program: Program<'info, Token>,
     pub rent: Sysvar<'info, Rent>,
@@ -146,7 +168,6 @@ pub struct TerminateAuction {
 #[derive(AnchorSerialize, AnchorDeserialize)]
 pub struct InitializeStateArgs {
     pub state_nonce: u8,
-    pub mint_auth_nonce: u8,
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize)]
@@ -156,26 +177,32 @@ pub struct InitializeUnderlyingArgs {
 
 #[derive(AnchorSerialize, AnchorDeserialize)]
 pub struct InitializeAuctionArgs {
-    pub amount: u64,
+    pub escrow_amount: u64,
     pub starting_price: u64,
     pub bid_end_time: u64,
     pub cooldown_period: u64,
+    pub auction_account_nonce: u8,
     pub underlying_token_nonce: u8,
     pub bid_token_nonce: u8,
 }
 
 #[account]
 #[derive(Default)]
+pub struct AuctionAccount {
+    pub auction_account_nonce: u8,
+}
+
+#[account]
+#[derive(Default)]
 pub struct Underlying {
     pub underlying_nonce: u8,
-    pub mint: Pubkey,
+    pub count: u64,
 }
 
 #[account]
 #[derive(Default)]
 pub struct State {
     pub state_nonce: u8,
-    pub mint_auth_nonce: u8,
     pub admin: Pubkey,
 }
 
@@ -183,4 +210,10 @@ pub struct State {
 pub enum ErrorCode {
     #[msg("Unauthorized admin")]
     UnauthorizedAdmin,
+    #[msg("Invalid token account owner")]
+    InvalidTokenAccountOwner,
+    #[msg("Insufficient funds")]
+    InsufficientFunds,
+    #[msg("Auction endtime must be in the future")]
+    AuctionEndTimeMustBeInTheFuture,
 }
